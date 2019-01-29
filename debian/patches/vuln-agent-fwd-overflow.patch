@@ -1,0 +1,88 @@
+From 5e2013ef72274a3d9d73d8f3e6047f3cc5657f4e Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Tue, 21 Mar 2017 11:55:50 +0000
+Subject: Sanity-check message length fields in CHAN_AGENT input.
+
+Fixes 'vuln-agent-fwd-overflow': a hostile agent-forwarding client
+sending a length such as 0xFFFFFFFD can cause c->u.a.totallen to end
+up less than c->u.a.lensofar, leading to an attacker-controlled heap
+overwrite when those two values are subtracted and used as a bound for
+the amount of data to memcpy into the buffer.
+
+Of course the mitigating factor is that if there is any such thing as
+a 'hostile agent-forwarding client' in your world then you're likely
+to _already_ be in fairly serious trouble - they can make free use of
+all the keys stored in your agent, and would surely prefer to do that
+than tip their hand by crashing your SSH client.
+
+This is just the sort of thing I should have spotted in one of my past
+general tightening-up passes such as commit 896bb7c74, but apparently
+didn't :-(
+
+Bug-Debian: https://bugs.debian.org/857642
+Last-Update: 2017-03-22
+
+Patch-Name: vuln-agent-fwd-overflow.patch
+---
+ ssh.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/ssh.c b/ssh.c
+index e1e94d78..9b28e95d 100644
+--- a/ssh.c
++++ b/ssh.c
+@@ -5606,6 +5606,27 @@ static void ssh1_msg_channel_data(Ssh ssh, struct Packet *pktin)
+ 		if (c->u.a.lensofar == 4) {
+ 		    c->u.a.totallen =
+ 			4 + GET_32BIT(c->u.a.msglen);
++		    if (c->u.a.totallen < 4 || c->u.a.totallen > 0x10000) {
++			/* If we received an out-of-range message length -
++			 * either so large as to cause c->u.a.totallen to
++			 * suffer unsigned integer overflow, or just too large
++			 * to be a sensible amount of memory to malloc or to
++			 * be a plausible agent message - we send an
++			 * SSH_AGENT_FAILURE message, then send EOF, and
++			 * immediately turn the channel into a CHAN_ZOMBIE to
++			 * avoid continuing to try to parse the bogus
++			 * message. */
++			char failure_msg[5];
++			PUT_32BIT(failure_msg, 1);
++			failure_msg[4] = SSH_AGENT_FAILURE;
++			sshfwd_write(c, failure_msg, sizeof(failure_msg));
++			sshfwd_write_eof(c);
++			sfree(c->u.a.message);
++			c->type = CHAN_ZOMBIE;
++			logevent("Agent-forwarding connection closed due to "
++				 "receiving bogus agent message length");
++			return;
++		    }
+ 		    c->u.a.message = snewn(c->u.a.totallen,
+ 					   unsigned char);
+ 		    memcpy(c->u.a.message, c->u.a.msglen, 4);
+@@ -7559,6 +7580,26 @@ static void ssh2_msg_channel_data(Ssh ssh, struct Packet *pktin)
+ 		if (c->u.a.lensofar == 4) {
+ 		    c->u.a.totallen =
+ 			4 + GET_32BIT(c->u.a.msglen);
++		    if (c->u.a.totallen < 4 || c->u.a.totallen > 0x10000) {
++			/* If we received an out-of-range message length -
++			 * either so large as to cause c->u.a.totallen to
++			 * suffer unsigned integer overflow, or just too large
++			 * to be a sensible amount of memory to malloc or to
++			 * be a plausible agent message - we send an
++			 * SSH_AGENT_FAILURE message, then send EOF, and
++			 * immediately turn the channel into a CHAN_ZOMBIE to
++			 * avoid continuing to try to parse the bogus
++			 * message. */
++			char failure_msg[5];
++			PUT_32BIT(failure_msg, 1);
++			failure_msg[4] = SSH_AGENT_FAILURE;
++			sshfwd_write(c, failure_msg, sizeof(failure_msg));
++			sfree(c->u.a.message);
++			logevent("Agent-forwarding connection closed due to "
++				 "receiving bogus agent message length");
++			sshfwd_unclean_close(c, "message ignored");
++			return;
++		    }
+ 		    c->u.a.message = snewn(c->u.a.totallen,
+ 					   unsigned char);
+ 		    memcpy(c->u.a.message, c->u.a.msglen, 4);

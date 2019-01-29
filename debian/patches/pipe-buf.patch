@@ -19,7 +19,7 @@ Patch-Name: pipe-buf.patch
  1 file changed, 3 insertions(+)
 
 diff --git a/unix/uxshare.c b/unix/uxshare.c
-index 3da52de..4beb4a8 100644
+index 3da52def..4beb4a83 100644
 --- a/unix/uxshare.c
 +++ b/unix/uxshare.c
 @@ -23,6 +23,9 @@

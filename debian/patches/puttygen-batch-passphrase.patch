@@ -36,7 +36,7 @@ Patch-Name: puttygen-batch-passphrase.patch
  2 files changed, 114 insertions(+), 55 deletions(-)
 
 diff --git a/cmdgen.c b/cmdgen.c
-index c15c01d..424ff95 100644
+index c15c01dd..424ff95d 100644
 --- a/cmdgen.c
 +++ b/cmdgen.c
 @@ -10,6 +10,8 @@
@@ -301,7 +301,7 @@ index c15c01d..424ff95 100644
  
      if (ssh1key)
 diff --git a/doc/man-pg.but b/doc/man-pg.but
-index 51173e2..d381c0e 100644
+index 51173e22..d381c0ed 100644
 --- a/doc/man-pg.but
 +++ b/doc/man-pg.but
 @@ -64,6 +64,13 @@ generate SSH-1 keys).

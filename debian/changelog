@@ -1,3 +1,16 @@
+putty (0.67-3build0.16.04.1) xenial-security; urgency=medium
+
+  * fake sync from Debian
+
+ -- Mike Salvatore <mike.salvatore@canonical.com>  Tue, 29 Jan 2019 10:26:27 -0500
+
+putty (0.67-3) unstable; urgency=high
+
+  * CVE-2017-6542: Sanity-check message length fields in CHAN_AGENT input
+    (thanks, Simon Tatham; closes: #857642).
+
+ -- Colin Watson <cjwatson@debian.org>  Wed, 22 Mar 2017 14:42:13 +0000
+
 putty (0.67-2) unstable; urgency=medium
 
   * Backport from upstream:
