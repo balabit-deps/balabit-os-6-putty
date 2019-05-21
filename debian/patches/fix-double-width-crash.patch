@@ -1,0 +1,46 @@
+From 274a2b4473ee2b3ee28698ea129036c079b73be4 Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Thu, 14 Mar 2019 18:13:01 +0000
+Subject: Fix crash printing a width-2 char in a width-1 terminal.
+
+If the terminal is one column wide, it's not possible to print a
+double-width CJK character at all - it won't fit. Replace it with
+U+FFFD to indicate that impossibility.
+
+The previous behaviour was to notice that we're in the rightmost
+column of the terminal, and invoke the LATTR_WRAPPED2 special case to
+wrap to the leftmost column on the next line. But in a width-1
+terminal, the rightmost column _is_ the leftmost column, so this would
+leave us no better off, and we would have fallen through into the next
+case while in exactly the situation we'd tried to rule out.
+
+Origin: upstream, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=03777723e553024e94d8bfcf182f3a2e92ffb914
+Last-Update: 2019-03-16
+
+Patch-Name: fix-double-width-crash.patch
+---
+ terminal.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/terminal.c b/terminal.c
+index 5af67802..7cc6fa1e 100644
+--- a/terminal.c
++++ b/terminal.c
+@@ -3206,6 +3206,17 @@ static void term_out(Terminal *term)
+ 			logtraffic(term->logctx, (unsigned char) c,
+ 				   LGTYP_ASCII);
+ 
++                    /*
++                     * Preliminary check: if the terminal is only one
++                     * character cell wide, then we cannot display any
++                     * double-width character at all. Substitute
++                     * single-width REPLACEMENT CHARACTER instead.
++                     */
++                    if (width == 2 && term->cols < 2) {
++                        width = 1;
++                        c = 0xFFFD;
++                    }
++
+ 		    switch (width) {
+ 		      case 2:
+ 			/*

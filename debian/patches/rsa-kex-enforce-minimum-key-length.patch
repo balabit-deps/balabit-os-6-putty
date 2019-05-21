@@ -1,0 +1,77 @@
+From 58ba15b65515cc8041d6b82ca026a0c49ef6017a Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Thu, 7 Feb 2019 20:04:17 +0000
+Subject: RSA kex: enforce the minimum key length.
+
+I completely forgot to check that the server had actually sent a key
+of at least MINKLEN bits, as RFC 4432 clearly says that it MUST.
+Without this restriction, not only can a server trick the client into
+using a shared secret with inadequate entropy, but it can send a key
+so short that the client attempts to generate a secret integer of
+negative length, with integer-overflowing results.
+
+Origin: backport, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=d82854999516046122501b2e145099740ed0284f
+Last-Update: 2019-03-20
+
+Patch-Name: rsa-kex-enforce-minimum-key-length.patch
+---
+ ssh.c    | 12 ++++++++++++
+ ssh.h    |  2 ++
+ sshrsa.c |  4 ++--
+ 3 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/ssh.c b/ssh.c
+index 9b28e95d..f0dca2d4 100644
+--- a/ssh.c
++++ b/ssh.c
+@@ -6799,7 +6799,19 @@ static void do_ssh2_transport(Ssh ssh, void *vin, int inlen,
+          */
+         {
+             int klen = ssh_rsakex_klen(s->rsakey);
++
++            int minklen = (ssh->kex == &ssh_rsa_kex_sha1 ? 1024 : 2048);
++            if (klen < minklen) {
++                sfree(s->rsakeydata);
++                bombout(("Server sent %d-bit RSA key, "
++                         "less than the minimum size %d for %s "
++                         "key exchange", klen, minklen, ssh->kex->name));
++                crStopV;
++            }
++
+             int nbits = klen - (2*ssh->kex->hash->hlen*8 + 49);
++            assert(nbits > 0);
++
+             int i, byte = 0;
+             unsigned char *kstr1, *kstr2, *outstr;
+             int kstr1len, kstr2len, outstrlen;
+diff --git a/ssh.h b/ssh.h
+index f55136e9..d7981ba5 100644
+--- a/ssh.h
++++ b/ssh.h
+@@ -333,6 +333,8 @@ extern const struct ssh_kexes ssh_diffiehellman_group1;
+ extern const struct ssh_kexes ssh_diffiehellman_group14;
+ extern const struct ssh_kexes ssh_diffiehellman_gex;
+ extern const struct ssh_kexes ssh_rsa_kex;
++extern const struct ssh_kex ssh_rsa_kex_sha1;
++extern const struct ssh_kex ssh_rsa_kex_sha256;
+ extern const struct ssh_signkey ssh_dss;
+ extern const struct ssh_signkey ssh_rsa;
+ extern const struct ssh_mac ssh_hmac_md5;
+diff --git a/sshrsa.c b/sshrsa.c
+index a084d8ed..1ea8feb2 100644
+--- a/sshrsa.c
++++ b/sshrsa.c
+@@ -1092,11 +1092,11 @@ void ssh_rsakex_encrypt(const struct ssh_hash *h, unsigned char *in, int inlen,
+      */
+ }
+ 
+-static const struct ssh_kex ssh_rsa_kex_sha1 = {
++const struct ssh_kex ssh_rsa_kex_sha1 = {
+     "rsa1024-sha1", NULL, KEXTYPE_RSA, NULL, NULL, 0, 0, &ssh_sha1
+ };
+ 
+-static const struct ssh_kex ssh_rsa_kex_sha256 = {
++const struct ssh_kex ssh_rsa_kex_sha256 = {
+     "rsa2048-sha256", NULL, KEXTYPE_RSA, NULL, NULL, 0, 0, &ssh_sha256
+ };
+ 

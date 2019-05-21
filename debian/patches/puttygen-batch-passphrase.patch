@@ -31,8 +31,8 @@ Last-Update: 2016-03-18
 
 Patch-Name: puttygen-batch-passphrase.patch
 ---
- cmdgen.c       | 149 ++++++++++++++++++++++++++++++++++++++-------------------
- doc/man-pg.but |  20 ++++++--
+ cmdgen.c       | 149 ++++++++++++++++++++++++++++++++-----------------
+ doc/man-pg.but |  20 +++++--
  2 files changed, 114 insertions(+), 55 deletions(-)
 
 diff --git a/cmdgen.c b/cmdgen.c
@@ -214,17 +214,18 @@ index c15c01dd..424ff95d 100644
  	    if (ssh2key) {
  		if (ssh2key != SSH2_WRONG_PASSPHRASE)
  		    error = NULL;
-@@ -848,10 +890,17 @@ int main(int argc, char **argv)
+@@ -847,11 +889,18 @@ int main(int argc, char **argv)
+ 	}
      }
  
-     /*
++    /*
 +     * Unless we're changing the passphrase, the old one (if any) is a
 +     * reasonable default.
 +     */
 +    if (!change_passphrase && old_passphrase && !new_passphrase)
 +	new_passphrase = dupstr(old_passphrase);
 +
-+    /*
+     /*
       * Prompt for a new passphrase if we have been asked to, or if
       * we have just generated a key.
       */

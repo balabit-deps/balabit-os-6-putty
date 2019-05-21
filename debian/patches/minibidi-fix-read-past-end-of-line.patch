@@ -1,0 +1,33 @@
+From f178c57a263eec261b19b76d63aec520d81ed67f Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Sat, 9 Feb 2019 14:12:16 +0000
+Subject: minibidi: fix read past end of line in rule W5.
+
+The check for a sequence of ET with an EN after it could potentially
+skip ETs all the way up to the end of the buffer and then look for an
+EN in the following nonexistent array element. Now it only skips ETs
+up to count-1, in the same style as the similar check in rule N1.
+
+Change-Id: Ifdbae494a22d1b96bf49ae1bcae0efb901565f45
+
+Origin: upstream, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=03492ab59369dc8347d8eb8693da548b5e27cf0b
+Last-Update: 2019-03-16
+
+Patch-Name: minibidi-fix-read-past-end-of-line.patch
+---
+ minibidi.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/minibidi.c b/minibidi.c
+index 6c062116..219245da 100644
+--- a/minibidi.c
++++ b/minibidi.c
+@@ -1413,7 +1413,7 @@ int do_bidi(bidi_char *line, int count)
+                 continue;
+             } else if (i < count-1 && types[i+1] == ET) {
+                 j=i;
+-                while (j <count && types[j] == ET) {
++                while (j < count-1 && types[j] == ET) {
+                     j++;
+                 }
+                 if (types[j] == EN)

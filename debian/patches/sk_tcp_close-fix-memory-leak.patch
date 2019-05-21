@@ -1,0 +1,44 @@
+From b36fc2134289eb071326f52e5fba84aa413058d8 Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Tue, 29 Jan 2019 20:13:47 +0000
+Subject: sk_tcp_close: fix memory leak of output bufchain.
+
+If there was still pending output data on a NetSocket's output_data
+bufchain when it was closed, then we wouldn't have freed it, on either
+Unix or Windows.
+
+Origin: upstream, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=0212b9e5e5cb55ecaf678a65c2ef0d8d968c8a26
+Last-Update: 2019-03-16
+
+Patch-Name: sk_tcp_close-fix-memory-leak.patch
+---
+ unix/uxnet.c     | 2 ++
+ windows/winnet.c | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/unix/uxnet.c b/unix/uxnet.c
+index d97574ad..e072c479 100644
+--- a/unix/uxnet.c
++++ b/unix/uxnet.c
+@@ -987,6 +987,8 @@ static void sk_tcp_close(Socket sock)
+     if (s->child)
+         sk_tcp_close((Socket)s->child);
+ 
++    bufchain_clear(&s->output_data);
++
+     uxsel_del(s->s);
+     del234(sktree, s);
+     close(s->s);
+diff --git a/windows/winnet.c b/windows/winnet.c
+index fdb83c80..cba5f5c6 100644
+--- a/windows/winnet.c
++++ b/windows/winnet.c
+@@ -1384,6 +1384,8 @@ static void sk_tcp_close(Socket sock)
+     if (s->child)
+ 	sk_tcp_close((Socket)s->child);
+ 
++    bufchain_clear(&s->output_data);
++
+     del234(sktree, s);
+     do_select(s->s, 0);
+     p_closesocket(s->s);

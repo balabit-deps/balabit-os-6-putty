@@ -1,3 +1,17 @@
 pipe-buf.patch
 puttygen-batch-passphrase.patch
 vuln-agent-fwd-overflow.patch
+put-hashed-noise-into-random-pool.patch
+remove-pending-toplevel-callbacks.patch
+random-add-noise-overrun.patch
+uxnet-clean-up-callbacks.patch
+sk_tcp_close-fix-memory-leak.patch
+fix-bad-rsa-key-handling.patch
+sanity-check-public-lines.patch
+uxsel-enum.patch
+switch-to-poll.patch
+rsa-kex-enforce-minimum-key-length.patch
+fix-esc6-combining-chars-crash.patch
+limit-combining-chars-per-cell.patch
+minibidi-fix-read-past-end-of-line.patch
+fix-double-width-crash.patch

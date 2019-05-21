@@ -1,0 +1,48 @@
+From 341479f2b8b7b65b19f089f407daf35057c0ebe4 Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Wed, 6 Feb 2019 21:09:29 +0000
+Subject: Fix handling of bad RSA key with n=p=q=0.
+
+In this situation, rsa_verify won't notice anything wrong until it
+gets to the point where decbn() tries to subtract 1 from p, and
+underruns the Bignum buffer.
+
+Just in case some other attack vector reaches that same problem point,
+I've also put a protective assertion in decbn() itself just before the
+memory overwrite would have happened.
+
+Last-Update: 2019-03-16
+
+Patch-Name: fix-bad-rsa-key-handling.patch
+---
+ sshbn.c  | 1 +
+ sshrsa.c | 4 ++++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/sshbn.c b/sshbn.c
+index 8393721a..70331008 100644
+--- a/sshbn.c
++++ b/sshbn.c
+@@ -1092,6 +1092,7 @@ void decbn(Bignum bn)
+     int i = 1;
+     while (i < (int)bn[0] && bn[i] == 0)
+ 	bn[i++] = BIGNUM_INT_MASK;
++    assert(i < (int)bn[0]);
+     bn[i]--;
+ }
+ 
+diff --git a/sshrsa.c b/sshrsa.c
+index 5c1991ef..a084d8ed 100644
+--- a/sshrsa.c
++++ b/sshrsa.c
+@@ -411,6 +411,10 @@ int rsa_verify(struct RSAKey *key)
+     Bignum n, ed, pm1, qm1;
+     int cmp;
+ 
++    /* n cannot be zero. */
++    if (!bignum_cmp(key->modulus, Zero))
++        return 0;
++
+     /* n must equal pq. */
+     n = bigmul(key->p, key->q);
+     cmp = bignum_cmp(n, key->modulus);

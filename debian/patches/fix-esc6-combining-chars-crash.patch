@@ -1,0 +1,45 @@
+From 9023edd760548478b206f22536b24ed3ad57ee4f Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Thu, 14 Feb 2019 18:05:22 +0000
+Subject: Fix crash on ESC#6 + combining chars + GTK + odd-width terminal.
+
+When we're displaying double-width text as a result of the VT100 ESC#6
+escape sequence or its friends, and the terminal width is an odd
+number of columns, we divide by 2 the number of characters we'll even
+try to display, and round _down_: if there's a rightmost odd column,
+it stays blank, and doesn't show the left half of a double-width char.
+
+In the GTK redraw function, that rounding-down can set the 'len'
+variable to zero. But when we're displaying a character with Unicode
+combining chars on top, that fails an assertion that len == 1, because
+at the top of the function we set it to 1.
+
+The fix is just to return early if len is reduced to zero by that
+rounding: if we're not displaying any characters, then we don't have
+to do anything at all.
+
+Origin: upstream, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=daf91ef8ae9780bb1dfb534afa79e4babb89ba26
+Last-Update: 2019-03-16
+
+Patch-Name: fix-esc6-combining-chars-crash.patch
+---
+ unix/gtkwin.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/unix/gtkwin.c b/unix/gtkwin.c
+index 30933da7..34591a7a 100644
+--- a/unix/gtkwin.c
++++ b/unix/gtkwin.c
+@@ -2278,8 +2278,11 @@ void do_text_internal(Context ctx, int x, int y, wchar_t *text, int len,
+ 	x *= 2;
+ 	if (x >= inst->term->cols)
+ 	    return;
+-	if (x + len*2*widefactor > inst->term->cols)
++	if (x + len*2*widefactor > inst->term->cols) {
+ 	    len = (inst->term->cols-x)/2/widefactor;/* trim to LH half */
++            if (len == 0)
++                return; /* rounded down half a double-width char to zero */
++        }
+ 	rlen = len * 2;
+     } else
+ 	rlen = len;

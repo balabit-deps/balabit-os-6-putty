@@ -1,0 +1,32 @@
+From 192edc31f3e3bcee4b93df68853ecd8701c742ba Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Tue, 29 Jan 2019 20:15:43 +0000
+Subject: uxnet: clean up callbacks when closing a NetSocket.
+
+uxnet.c's method for passing socket errors on to the Plug involves
+setting up a toplevel callback using the NetSocket itself as the
+context. Therefore, it should call delete_callbacks_for_context when
+it destroys a NetSocket. For example, if _two_ socket errors manage to
+occur, and the first one causes the socket to be closed, you need the
+second callback to not happen, or it'll dereference the freed pointer.
+
+Origin: upstream, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=8329d192be5b2bcd1be61634e0b689ecf2a810a8
+Last-Update: 2019-03-16
+
+Patch-Name: uxnet-clean-up-callbacks.patch
+---
+ unix/uxnet.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/unix/uxnet.c b/unix/uxnet.c
+index b15031f4..d97574ad 100644
+--- a/unix/uxnet.c
++++ b/unix/uxnet.c
+@@ -992,6 +992,7 @@ static void sk_tcp_close(Socket sock)
+     close(s->s);
+     if (s->addr)
+         sk_addr_free(s->addr);
++    delete_callbacks_for_context(s);
+     sfree(s);
+ }
+ 

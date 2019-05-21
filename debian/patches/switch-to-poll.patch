@@ -1,0 +1,691 @@
+From ea946e85fd332f8329b526cf9bac2e73ae76e92f Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Thu, 7 Feb 2019 18:21:06 +0000
+Subject: Switch to using poll(2) in place of select(2).
+
+I've always thought poll was more hassle to set up, because if you
+want to reuse part of your pollfds list between calls then you have to
+index every fd by its position in the list as well as the fd number
+itself, which gives you twice as many indices to keep track of than if
+the fd is always its own key.
+
+But the problem is that select is fundamentally limited to the range
+of fds that can fit in an fd_set, which is not the range of fds that
+can _exist_, so I've had a change of heart and now have to go with
+poll.
+
+For the moment, I've surrounded it with a 'pollwrapper' structure that
+lets me treat it more or less like select, containing a tree234 that
+maps each fd to its location in the list, and also translating between
+the simple select r/w/x classification and the richer poll flags.
+That's let me do the migration with minimal disruption to the call
+sites.
+
+In future perhaps I can start using poll more directly, and/or using
+the richer flag system (though the latter might be fiddly because of
+sometimes being constrained to use the glib event loop). But this will
+do for now.
+
+Origin: backport, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=5c926d9ea4a9e0a0a2384f06c7583648cdff3ed6
+Last-Update: 2019-03-29
+
+Patch-Name: switch-to-poll.patch
+---
+ Recipe         |   4 +-
+ cmdline.c      |   2 +-
+ configure.ac   |   2 +-
+ putty.h        |   4 +-
+ unix/unix.h    |  19 +++++++
+ unix/uxcons.c  |  15 +++---
+ unix/uxnet.c   |   2 +-
+ unix/uxplink.c |  70 +++++++++++-------------
+ unix/uxpoll.c  | 141 +++++++++++++++++++++++++++++++++++++++++++++++++
+ unix/uxsel.c   |   4 +-
+ unix/uxsftp.c  |  57 +++++++++-----------
+ 11 files changed, 234 insertions(+), 86 deletions(-)
+ create mode 100644 unix/uxpoll.c
+
+diff --git a/Recipe b/Recipe
+index b3dbbcb2..b28b296b 100644
+--- a/Recipe
++++ b/Recipe
+@@ -234,7 +234,7 @@ SFTP     = sftp int64 logging
+ MISC     = timing callback misc version settings tree234 proxy conf
+ WINMISC  = MISC winstore winnet winhandl cmdline windefs winmisc winproxy
+          + wintime winhsock errsock winsecur
+-UXMISC   = MISC uxstore uxsel uxnet uxpeer cmdline uxmisc uxproxy time
++UXMISC   = MISC uxstore uxsel uxpoll uxnet uxpeer cmdline uxmisc uxproxy time
+ OSXMISC  = MISC uxstore uxsel osxsel uxnet uxpeer uxmisc uxproxy time
+ 
+ # Character set library, for use in pterm.
+@@ -297,7 +297,7 @@ plink    : [U] uxplink uxcons NONSSH UXSSH U_BE_ALL logging UXMISC uxsignal
+ puttygen : [U] cmdgen sshrsag sshdssg sshprime sshdes sshbn sshmd5 version
+          + sshrand uxnoise sshsha misc sshrsa sshdss uxcons uxstore uxmisc
+          + sshpubk sshaes sshsh256 sshsh512 import puttygen.res time tree234
+-	 + uxgen notiming conf
++	 + uxgen notiming conf uxpoll
+ 
+ pscp     : [U] pscp uxsftp uxcons UXSSH BE_SSH SFTP wildcard UXMISC
+ psftp    : [U] psftp uxsftp uxcons UXSSH BE_SSH SFTP wildcard UXMISC
+diff --git a/cmdline.c b/cmdline.c
+index 9f3360b2..13a28d15 100644
+--- a/cmdline.c
++++ b/cmdline.c
+@@ -121,7 +121,7 @@ int cmdline_get_passwd_input(prompts_t *p, unsigned char *in, int inlen) {
+  * transfer tools (psftp, pscp) can't do a great deal with protocol
+  * selections (ever tried running scp over telnet?) or with port
+  * forwarding (even if it wasn't a hideously bad idea, they don't
+- * have the select() infrastructure to make them work).
++ * have the select/poll infrastructure to make them work).
+  */
+ int cmdline_tooltype = 0;
+ 
+diff --git a/configure.ac b/configure.ac
+index 89789c0b..9029901f 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -66,7 +66,7 @@ case "$gtk_version_desired" in
+   *) AC_ERROR([Invalid GTK version specified])
+ esac
+ 
+-AC_CHECK_HEADERS([utmpx.h sys/select.h],,,[
++AC_CHECK_HEADERS([utmpx.h],,,[
+ #include <sys/types.h>
+ #include <utmp.h>])
+ 
+diff --git a/putty.h b/putty.h
+index aef29c20..4afdd738 100644
+--- a/putty.h
++++ b/putty.h
+@@ -1349,7 +1349,7 @@ char filename_char_sanitise(char c);   /* rewrite special pathname chars */
+  * The reason for this is that an OS's system clock might not agree
+  * exactly with the timing mechanisms it supplies to wait for a
+  * given interval. I'll illustrate this by the simple example of
+- * Unix Plink, which uses timeouts to select() in a way which for
++ * Unix Plink, which uses timeouts to poll() in a way which for
+  * these purposes can simply be considered to be a wait() function.
+  * Suppose, for the sake of argument, that this wait() function
+  * tends to return early by 1%. Then a possible sequence of actions
+@@ -1420,7 +1420,7 @@ void timer_change_notify(unsigned long next);
+  * instead request notifications when a callback is available, so that
+  * it knows to ask its delegate event loop to do the same thing. Also,
+  * if a front end needs to know whether a callback is pending without
+- * actually running it (e.g. so as to put a zero timeout on a select()
++ * actually running it (e.g. so as to put a zero timeout on a poll()
+  * call) then it can call toplevel_callback_pending(), which will
+  * return true if at least one callback is in the queue.
+  */
+diff --git a/unix/unix.h b/unix/unix.h
+index edc77a67..41dab1cc 100644
+--- a/unix/unix.h
++++ b/unix/unix.h
+@@ -192,4 +192,23 @@ extern Backend serial_backend;
+  */
+ int so_peercred(int fd, int *pid, int *uid, int *gid);
+ 
++/*
++ * uxpoll.c.
++ */
++typedef struct pollwrapper pollwrapper;
++pollwrapper *pollwrap_new(void);
++void pollwrap_free(pollwrapper *pw);
++void pollwrap_clear(pollwrapper *pw);
++void pollwrap_add_fd_events(pollwrapper *pw, int fd, int events);
++void pollwrap_add_fd_rwx(pollwrapper *pw, int fd, int rwx);
++int pollwrap_poll_instant(pollwrapper *pw);
++int pollwrap_poll_endless(pollwrapper *pw);
++int pollwrap_poll_timeout(pollwrapper *pw, int milliseconds);
++int pollwrap_get_fd_events(pollwrapper *pw, int fd);
++int pollwrap_get_fd_rwx(pollwrapper *pw, int fd);
++static inline int pollwrap_check_fd_rwx(pollwrapper *pw, int fd, int rwx)
++{
++    return (pollwrap_get_fd_rwx(pw, fd) & rwx) != 0;
++}
++
+ #endif
+diff --git a/unix/uxcons.c b/unix/uxcons.c
+index fa1c43f2..bba6746f 100644
+--- a/unix/uxcons.c
++++ b/unix/uxcons.c
+@@ -78,12 +78,13 @@ void timer_change_notify(unsigned long next)
+ /*
+  * Wrapper around Unix read(2), suitable for use on a file descriptor
+  * that's been set into nonblocking mode. Handles EAGAIN/EWOULDBLOCK
+- * by means of doing a one-fd select and then trying again; all other
+- * errors (including errors from select) are returned to the caller.
++ * by means of doing a one-fd poll and then trying again; all other
++ * errors (including errors from poll) are returned to the caller.
+  */
+ static int block_and_read(int fd, void *buf, size_t len)
+ {
+     int ret;
++    pollwrapper *pw = pollwrap_new();
+ 
+     while ((ret = read(fd, buf, len)) < 0 && (
+ #ifdef EAGAIN
+@@ -94,16 +95,16 @@ static int block_and_read(int fd, void *buf, size_t len)
+ #endif
+                0)) {
+ 
+-        fd_set rfds;
+-        FD_ZERO(&rfds);
+-        FD_SET(fd, &rfds);
+-        ret = select(fd+1, &rfds, NULL, NULL, NULL);
++        pollwrap_clear(pw);
++        pollwrap_add_fd_rwx(pw, fd, SELECT_R);
++        ret = pollwrap_poll_endless(pw);
+         assert(ret != 0);
+         if (ret < 0)
+             return ret;
+-        assert(FD_ISSET(fd, &rfds));
++        assert(pollwrap_check_fd_rwx(pw, fd, SELECT_R));
+     }
+ 
++    pollwrap_free(pw);
+     return ret;
+ }
+ 
+diff --git a/unix/uxnet.c b/unix/uxnet.c
+index 103f7635..d4f8f286 100644
+--- a/unix/uxnet.c
++++ b/unix/uxnet.c
+@@ -1379,7 +1379,7 @@ static int net_select_result(int fd, int event)
+       case SELECT_W:                   /* writable */
+ 	if (!s->connected) {
+ 	    /*
+-	     * select() reports a socket as _writable_ when an
++	     * select/poll reports a socket as _writable_ when an
+ 	     * asynchronous connection is completed.
+ 	     */
+ 	    s->connected = s->writable = 1;
+diff --git a/unix/uxplink.c b/unix/uxplink.c
+index e622001b..27dd6756 100644
+--- a/unix/uxplink.c
++++ b/unix/uxplink.c
+@@ -8,15 +8,13 @@
+ #include <assert.h>
+ #include <stdarg.h>
+ #include <signal.h>
++#include <limits.h>
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <termios.h>
+ #include <pwd.h>
+ #include <sys/ioctl.h>
+ #include <sys/time.h>
+-#ifndef HAVE_NO_SYS_SELECT_H
+-#include <sys/select.h>
+-#endif
+ 
+ #define PUTTY_DO_GLOBALS	       /* actually _define_ globals */
+ #include "putty.h"
+@@ -998,36 +996,33 @@ int main(int argc, char **argv)
+     sending = FALSE;
+     now = GETTICKCOUNT();
+ 
++    pollwrapper *pw = pollwrap_new();
++
+     while (1) {
+-	fd_set rset, wset, xset;
+-	int maxfd;
+ 	int rwx;
+ 	int ret;
+         unsigned long next;
+ 
+-	FD_ZERO(&rset);
+-	FD_ZERO(&wset);
+-	FD_ZERO(&xset);
+-	maxfd = 0;
++        pollwrap_clear(pw);
+ 
+-	FD_SET_MAX(signalpipe[0], maxfd, rset);
++	pollwrap_add_fd_rwx(pw, signalpipe[0], SELECT_R);
+ 
+ 	if (connopen && !sending &&
+ 	    back->connected(backhandle) &&
+ 	    back->sendok(backhandle) &&
+ 	    back->sendbuffer(backhandle) < MAX_STDIN_BACKLOG) {
+ 	    /* If we're OK to send, then try to read from stdin. */
+-	    FD_SET_MAX(STDIN_FILENO, maxfd, rset);
++            pollwrap_add_fd_rwx(pw, STDIN_FILENO, SELECT_R);
+ 	}
+ 
+ 	if (bufchain_size(&stdout_data) > 0) {
+ 	    /* If we have data for stdout, try to write to stdout. */
+-	    FD_SET_MAX(STDOUT_FILENO, maxfd, wset);
++            pollwrap_add_fd_rwx(pw, STDOUT_FILENO, SELECT_W);
+ 	}
+ 
+ 	if (bufchain_size(&stderr_data) > 0) {
+ 	    /* If we have data for stderr, try to write to stderr. */
+-	    FD_SET_MAX(STDERR_FILENO, maxfd, wset);
++            pollwrap_add_fd_rwx(pw, STDERR_FILENO, SELECT_W);
+ 	}
+ 
+ 	/* Count the currently active fds. */
+@@ -1042,31 +1037,22 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	/*
+-	 * Add all currently open fds to the select sets, and store
+-	 * them in fdlist as well.
++	 * Add all currently open fds to pw, and store them in fdlist
++	 * as well.
+ 	 */
+ 	fdcount = 0;
+ 	for (fd = first_fd(&fdstate, &rwx); fd >= 0;
+ 	     fd = next_fd(&fdstate, &rwx)) {
+ 	    fdlist[fdcount++] = fd;
+-	    if (rwx & 1)
+-		FD_SET_MAX(fd, maxfd, rset);
+-	    if (rwx & 2)
+-		FD_SET_MAX(fd, maxfd, wset);
+-	    if (rwx & 4)
+-		FD_SET_MAX(fd, maxfd, xset);
++            pollwrap_add_fd_rwx(pw, fd, rwx);
+ 	}
+ 
+         if (toplevel_callback_pending()) {
+-            struct timeval tv;
+-            tv.tv_sec = 0;
+-            tv.tv_usec = 0;
+-            ret = select(maxfd, &rset, &wset, &xset, &tv);
++            ret = pollwrap_poll_instant(pw);
+         } else if (run_timers(now, &next)) {
+             do {
+                 unsigned long then;
+                 long ticks;
+-                struct timeval tv;
+ 
+ 		then = now;
+ 		now = GETTICKCOUNT();
+@@ -1074,39 +1060,45 @@ int main(int argc, char **argv)
+ 		    ticks = 0;
+ 		else
+ 		    ticks = next - now;
+-		tv.tv_sec = ticks / 1000;
+-		tv.tv_usec = ticks % 1000 * 1000;
+-                ret = select(maxfd, &rset, &wset, &xset, &tv);
+-                if (ret == 0)
++
++                int overflow = FALSE;
++                if (ticks > INT_MAX) {
++                    ticks = INT_MAX;
++                    overflow = TRUE;
++                }
++
++                ret = pollwrap_poll_timeout(pw, ticks);
++                if (ret == 0 && !overflow)
+                     now = next;
+                 else
+                     now = GETTICKCOUNT();
+             } while (ret < 0 && errno == EINTR);
+         } else {
+-            ret = select(maxfd, &rset, &wset, &xset, NULL);
++            ret = pollwrap_poll_endless(pw);
+         }
+ 
+ 	if (ret < 0) {
+-	    perror("select");
++	    perror("poll");
+ 	    exit(1);
+ 	}
+ 
+ 	for (i = 0; i < fdcount; i++) {
+ 	    fd = fdlist[i];
++            int rwx = pollwrap_get_fd_rwx(pw, fd);
+             /*
+              * We must process exceptional notifications before
+              * ordinary readability ones, or we may go straight
+              * past the urgent marker.
+              */
+-	    if (FD_ISSET(fd, &xset))
++	    if (rwx & SELECT_X)
+ 		select_result(fd, SELECT_X);
+-	    if (FD_ISSET(fd, &rset))
++	    if (rwx & SELECT_R)
+ 		select_result(fd, SELECT_R);
+-	    if (FD_ISSET(fd, &wset))
++	    if (rwx & SELECT_W)
+ 		select_result(fd, SELECT_W);
+ 	}
+ 
+-	if (FD_ISSET(signalpipe[0], &rset)) {
++	if (pollwrap_check_fd_rwx(pw, signalpipe[0], SELECT_R)) {
+ 	    char c[1];
+ 	    struct winsize size;
+ 	    if (read(signalpipe[0], c, 1) <= 0)
+@@ -1116,7 +1108,7 @@ int main(int argc, char **argv)
+ 		back->size(backhandle, size.ws_col, size.ws_row);
+ 	}
+ 
+-	if (FD_ISSET(STDIN_FILENO, &rset)) {
++	if (pollwrap_check_fd_rwx(pw, STDIN_FILENO, SELECT_R)) {
+ 	    char buf[4096];
+ 	    int ret;
+ 
+@@ -1137,11 +1129,11 @@ int main(int argc, char **argv)
+ 	    }
+ 	}
+ 
+-	if (FD_ISSET(STDOUT_FILENO, &wset)) {
++	if (pollwrap_check_fd_rwx(pw, STDOUT_FILENO, SELECT_W)) {
+ 	    back->unthrottle(backhandle, try_output(FALSE));
+ 	}
+ 
+-	if (FD_ISSET(STDERR_FILENO, &wset)) {
++	if (pollwrap_check_fd_rwx(pw, STDERR_FILENO, SELECT_W)) {
+ 	    back->unthrottle(backhandle, try_output(TRUE));
+ 	}
+ 
+diff --git a/unix/uxpoll.c b/unix/uxpoll.c
+new file mode 100644
+index 00000000..16ad0254
+--- /dev/null
++++ b/unix/uxpoll.c
+@@ -0,0 +1,141 @@
++#include <assert.h>
++
++#include <poll.h>
++
++#include "putty.h"
++#include "tree234.h"
++
++struct pollwrapper {
++    struct pollfd *fds;
++    size_t nfd, fdsize;
++    tree234 *fdtopos;
++};
++
++typedef struct pollwrap_fdtopos pollwrap_fdtopos;
++struct pollwrap_fdtopos {
++    int fd;
++    size_t pos;
++};
++
++static int pollwrap_fd_cmp(void *av, void *bv)
++{
++    pollwrap_fdtopos *a = (pollwrap_fdtopos *)av;
++    pollwrap_fdtopos *b = (pollwrap_fdtopos *)bv;
++    return a->fd < b->fd ? -1 : a->fd > b->fd ? +1 : 0;
++}
++
++pollwrapper *pollwrap_new(void)
++{
++    pollwrapper *pw = snew(pollwrapper);
++    pw->fdsize = 16;
++    pw->nfd = 0;
++    pw->fds = snewn(pw->fdsize, struct pollfd);
++    pw->fdtopos = newtree234(pollwrap_fd_cmp);
++    return pw;
++}
++
++void pollwrap_free(pollwrapper *pw)
++{
++    pollwrap_clear(pw);
++    freetree234(pw->fdtopos);
++    sfree(pw->fds);
++    sfree(pw);
++}
++
++void pollwrap_clear(pollwrapper *pw)
++{
++    pw->nfd = 0;
++    for (pollwrap_fdtopos *f2p;
++         (f2p = delpos234(pw->fdtopos, 0)) != NULL ;)
++        sfree(f2p);
++}
++
++void pollwrap_add_fd_events(pollwrapper *pw, int fd, int events)
++{
++    pollwrap_fdtopos *f2p, f2p_find;
++
++    assert(fd >= 0);
++
++    f2p_find.fd = fd;
++    f2p = find234(pw->fdtopos, &f2p_find, NULL);
++    if (!f2p) {
++        if (pw->nfd >= pw->fdsize) {
++            pw->fdsize = pw->nfd * 5 / 4 + 32;
++            pw->fds = sresize(pw->fds, pw->fdsize, struct pollfd);
++        }
++        size_t index = pw->nfd++;
++        pw->fds[index].fd = fd;
++        pw->fds[index].events = pw->fds[index].revents = 0;
++
++        f2p = snew(pollwrap_fdtopos);
++        f2p->fd = fd;
++        f2p->pos = index;
++        pollwrap_fdtopos *added = add234(pw->fdtopos, f2p);
++        assert(added == f2p);
++    }
++
++    pw->fds[f2p->pos].events |= events;
++}
++
++#define SELECT_R_IN (POLLIN  | POLLRDNORM | POLLRDBAND)
++#define SELECT_W_IN (POLLOUT | POLLWRNORM | POLLWRBAND)
++#define SELECT_X_IN (POLLPRI)
++
++#define SELECT_R_OUT (SELECT_R_IN | POLLERR | POLLHUP)
++#define SELECT_W_OUT (SELECT_W_IN | POLLERR)
++#define SELECT_X_OUT (SELECT_X_IN)
++
++void pollwrap_add_fd_rwx(pollwrapper *pw, int fd, int rwx)
++{
++    int events = 0;
++    if (rwx & SELECT_R)
++        events |= SELECT_R_IN;
++    if (rwx & SELECT_W)
++        events |= SELECT_W_IN;
++    if (rwx & SELECT_X)
++        events |= SELECT_X_IN;
++    pollwrap_add_fd_events(pw, fd, events);
++}
++
++int pollwrap_poll_instant(pollwrapper *pw)
++{
++    return poll(pw->fds, pw->nfd, 0);
++}
++
++int pollwrap_poll_endless(pollwrapper *pw)
++{
++    return poll(pw->fds, pw->nfd, -1);
++}
++
++int pollwrap_poll_timeout(pollwrapper *pw, int milliseconds)
++{
++    assert(milliseconds >= 0);
++    return poll(pw->fds, pw->nfd, milliseconds);
++}
++
++int pollwrap_get_fd_events(pollwrapper *pw, int fd)
++{
++    pollwrap_fdtopos *f2p, f2p_find;
++
++    assert(fd >= 0);
++
++    f2p_find.fd = fd;
++    f2p = find234(pw->fdtopos, &f2p_find, NULL);
++    if (!f2p)
++        return 0;
++
++    return pw->fds[f2p->pos].revents;
++}
++
++int pollwrap_get_fd_rwx(pollwrapper *pw, int fd)
++{
++    int revents = pollwrap_get_fd_events(pw, fd);
++    int rwx = 0;
++    if (revents & SELECT_R_OUT)
++        rwx |= SELECT_R;
++    if (revents & SELECT_W_OUT)
++        rwx |= SELECT_W;
++    if (revents & SELECT_X_OUT)
++        rwx |= SELECT_X;
++    return rwx;
++}
+diff --git a/unix/uxsel.c b/unix/uxsel.c
+index e2979c9a..9d8d7990 100644
+--- a/unix/uxsel.c
++++ b/unix/uxsel.c
+@@ -4,8 +4,8 @@
+  * This module is a sort of all-purpose interchange for file
+  * descriptors. At one end it talks to uxnet.c and pty.c and
+  * anything else which might have one or more fds that need
+- * select()-type things doing to them during an extended program
+- * run; at the other end it talks to pterm.c or uxplink.c or
++ * select() or poll()-type things doing to them during an extended
++ * program run; at the other end it talks to pterm.c or uxplink.c or
+  * anything else which might have its own means of actually doing
+  * those select()-type things.
+  */
+diff --git a/unix/uxsftp.c b/unix/uxsftp.c
+index 3db6c3d3..dd0867b8 100644
+--- a/unix/uxsftp.c
++++ b/unix/uxsftp.c
+@@ -6,6 +6,7 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <stdlib.h>
++#include <limits.h>
+ #include <fcntl.h>
+ #include <dirent.h>
+ #include <unistd.h>
+@@ -13,9 +14,6 @@
+ #include <errno.h>
+ #include <assert.h>
+ #include <glob.h>
+-#ifndef HAVE_NO_SYS_SELECT_H
+-#include <sys/select.h>
+-#endif
+ 
+ #include "putty.h"
+ #include "ssh.h"
+@@ -440,15 +438,16 @@ char *dir_file_cat(char *dir, char *file)
+  */
+ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
+ {
+-    fd_set rset, wset, xset;
+     int i, fdcount, fdsize, *fdlist;
+-    int fd, fdstate, rwx, ret, maxfd;
++    int fd, fdstate, rwx, ret;
+     unsigned long now = GETTICKCOUNT();
+     unsigned long next;
+ 
+     fdlist = NULL;
+     fdcount = fdsize = 0;
+ 
++    pollwrapper *pw = pollwrap_new();
++
+     do {
+ 
+ 	/* Count the currently active fds. */
+@@ -465,10 +464,7 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
+ 	    fdlist = sresize(fdlist, fdsize, int);
+ 	}
+ 
+-	FD_ZERO(&rset);
+-	FD_ZERO(&wset);
+-	FD_ZERO(&xset);
+-	maxfd = 0;
++        pollwrap_clear(pw);
+ 
+ 	/*
+ 	 * Add all currently open fds to the select sets, and store
+@@ -478,29 +474,20 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
+ 	for (fd = first_fd(&fdstate, &rwx); fd >= 0;
+ 	     fd = next_fd(&fdstate, &rwx)) {
+ 	    fdlist[fdcount++] = fd;
+-	    if (rwx & 1)
+-		FD_SET_MAX(fd, maxfd, rset);
+-	    if (rwx & 2)
+-		FD_SET_MAX(fd, maxfd, wset);
+-	    if (rwx & 4)
+-		FD_SET_MAX(fd, maxfd, xset);
++            pollwrap_add_fd_rwx(pw, fd, rwx);
+ 	}
+ 
+ 	if (include_stdin)
+-	    FD_SET_MAX(0, maxfd, rset);
++	    pollwrap_add_fd_rwx(pw, 0, SELECT_R);
+ 
+         if (toplevel_callback_pending()) {
+-            struct timeval tv;
+-            tv.tv_sec = 0;
+-            tv.tv_usec = 0;
+-            ret = select(maxfd, &rset, &wset, &xset, &tv);
++            ret = pollwrap_poll_instant(pw);
+             if (ret == 0)
+                 run_toplevel_callbacks();
+         } else if (run_timers(now, &next)) {
+             do {
+                 unsigned long then;
+                 long ticks;
+-                struct timeval tv;
+ 
+ 		then = now;
+ 		now = GETTICKCOUNT();
+@@ -508,36 +495,42 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
+ 		    ticks = 0;
+ 		else
+ 		    ticks = next - now;
+-		tv.tv_sec = ticks / 1000;
+-		tv.tv_usec = ticks % 1000 * 1000;
+-                ret = select(maxfd, &rset, &wset, &xset, &tv);
+-                if (ret == 0)
++
++                int overflow = FALSE;
++                if (ticks > INT_MAX) {
++                    ticks = INT_MAX;
++                    overflow = TRUE;
++                }
++
++                ret = pollwrap_poll_timeout(pw, ticks);
++                if (ret == 0 && !overflow)
+                     now = next;
+                 else
+                     now = GETTICKCOUNT();
+             } while (ret < 0 && errno == EINTR);
+         } else {
+-            ret = select(maxfd, &rset, &wset, &xset, NULL);
++            ret = pollwrap_poll_endless(pw);
+         }
+     } while (ret == 0);
+ 
+     if (ret < 0) {
+-	perror("select");
++	perror("poll");
+ 	exit(1);
+     }
+ 
+     for (i = 0; i < fdcount; i++) {
+ 	fd = fdlist[i];
++        int rwx = pollwrap_get_fd_rwx(pw, fd);
+ 	/*
+ 	 * We must process exceptional notifications before
+ 	 * ordinary readability ones, or we may go straight
+ 	 * past the urgent marker.
+ 	 */
+-	if (FD_ISSET(fd, &xset))
++	if (rwx & SELECT_X)
+ 	    select_result(fd, SELECT_X);
+-	if (FD_ISSET(fd, &rset))
++	if (rwx & SELECT_R)
+ 	    select_result(fd, SELECT_R);
+-	if (FD_ISSET(fd, &wset))
++	if (rwx & SELECT_W)
+ 	    select_result(fd, SELECT_W);
+     }
+ 
+@@ -545,7 +538,9 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
+ 
+     run_toplevel_callbacks();
+ 
+-    return FD_ISSET(0, &rset) ? 1 : 0;
++    int toret = pollwrap_check_fd_rwx(pw, 0, SELECT_R) ? 1 : 0;
++    pollwrap_free(pw);
++    return toret;
+ }
+ 
+ /*

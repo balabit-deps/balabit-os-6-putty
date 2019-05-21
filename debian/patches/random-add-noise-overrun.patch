@@ -1,0 +1,69 @@
+From ba5b71ebe191b9f5b897d75bddbff2d0d6739b9d Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Tue, 29 Jan 2019 21:07:41 +0000
+Subject: Fix one-byte buffer overrun in random_add_noise().
+
+The variable 'poolpos' is incremented by two functions: random_byte(),
+which reads from the pool, and random_add_noise(), which writes to it.
+Both of them must handle the case where poolpos reaches its upper
+limit POOLSIZE, wrap poolpos round to the bottom, and trigger a
+random_stir().
+
+Unfortunately, random_byte checks that poolpos < POOLSIZE _before_ the
+read, so it may leave poolpos==POOLSIZE on exit. And random_add_noise
+does it the other way round - it assumes it's safe to write the first
+byte _before_ doing the bounds check. So if exactly the right number
+of random_byte calls happen before the next add_noise, then a byte of
+entropy can be XORed into the thing just beyond the end of pool[].
+
+What _is_ beyond that point is the LSB of poolpos itself! Since
+POOLSIZE is not a multiple of 256, this means that poolpos could be
+made larger or smaller by this overwrite. If it's made larger, that's
+the safe case - the subsequent bounds check will still fail, and then
+poolpos will be reset anyway. (And this is also what will happen in
+the very likely case that poolpos was cached in a register during that
+part of the function.)
+
+The dangerous case is if poolpos is made _smaller_ by that overwrite.
+In that situation, the effect will be to rewind the position in the
+random pool, delaying a necessary random_stir() and causing
+already-output random numbers to either be reused, or to be reused
+combined with unhashed input noise. In the latter case, it's just
+conceivable that an attacker who was somehow controlling at least one
+entropy source might be able to manipulate the RNG output on demand.
+
+Last-Update: 2019-03-16
+
+Patch-Name: random-add-noise-overrun.patch
+---
+ sshrand.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/sshrand.c b/sshrand.c
+index 0b063a04..3f2a039a 100644
+--- a/sshrand.c
++++ b/sshrand.c
+@@ -219,17 +219,20 @@ void random_add_noise(void *noise, int length)
+      * sources then we would be throwing away valuable stuff.
+      */
+     while (length >= (HASHINPUT - pool.incomingpos)) {
++        int need_stir = FALSE;
+ 	memcpy(pool.incomingb + pool.incomingpos, p,
+ 	       HASHINPUT - pool.incomingpos);
+ 	p += HASHINPUT - pool.incomingpos;
+ 	length -= HASHINPUT - pool.incomingpos;
+ 	SHATransform((word32 *) pool.incoming, (word32 *) pool.incomingb);
+ 	for (i = 0; i < HASHSIZE; i++) {
+-	    pool.pool[pool.poolpos++] ^= pool.incoming[i];
+-	    if (pool.poolpos >= POOLSIZE)
++	    if (pool.poolpos >= POOLSIZE) {
+ 		pool.poolpos = 0;
++                need_stir = TRUE;
++            }
++	    pool.pool[pool.poolpos++] ^= pool.incoming[i];
+ 	}
+-	if (pool.poolpos < HASHSIZE)
++	if (need_stir)
+ 	    random_stir();
+ 
+ 	pool.incomingpos = 0;

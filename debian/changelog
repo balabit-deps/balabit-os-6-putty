@@ -1,8 +1,31 @@
-putty (0.67-3build0.16.04.1) xenial-security; urgency=medium
+putty (0.67-3+deb9u1build0.16.04.1) xenial-security; urgency=medium
 
-  * fake sync from Debian
+  * fake sync from Debian (LP: #1821407)
 
- -- Mike Salvatore <mike.salvatore@canonical.com>  Tue, 29 Jan 2019 10:26:27 -0500
+ -- Steve Beattie <sbeattie@ubuntu.com>  Tue, 21 May 2019 10:43:51 -0700
+
+putty (0.67-3+deb9u1) stretch-security; urgency=high
+
+  * Backport security fixes from 0.71:
+    - In random_add_noise, put the hashed noise into the pool, not the raw
+      noise.
+    - New facility for removing pending toplevel callbacks.
+    - CVE-2019-9898: Fix one-byte buffer overrun in random_add_noise().
+    - uxnet: clean up callbacks when closing a NetSocket.
+    - sk_tcp_close: fix memory leak of output bufchain.
+    - Fix handling of bad RSA key with n=p=q=0.
+    - Sanity-check the 'Public-Lines' field in ppk files.
+    - Introduce an enum of the uxsel / select_result flags.
+    - CVE-2019-9895: Switch to using poll(2) in place of select(2).
+    - CVE-2019-9894: RSA kex: enforce the minimum key length.
+    - CVE-2019-9897: Fix crash on ESC#6 + combining chars + GTK + odd-width
+      terminal.
+    - CVE-2019-9897: Limit the number of combining chars per terminal cell.
+    - minibidi: fix read past end of line in rule W5.
+    - CVE-2019-9897: Fix crash printing a width-2 char in a width-1
+      terminal.
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 02 Apr 2019 19:32:53 +0100
 
 putty (0.67-3) unstable; urgency=high
 

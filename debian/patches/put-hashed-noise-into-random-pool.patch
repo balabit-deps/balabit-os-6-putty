@@ -1,0 +1,32 @@
+From 5f164382eb5b1d16ef4c4dc6ec585b155610f28e Mon Sep 17 00:00:00 2001
+From: Tim Kosse <tim.kosse@filezilla-project.org>
+Date: Wed, 28 Dec 2016 15:41:40 +0100
+Subject: In random_add_noise, put the hashed noise into the pool, not the raw
+ noise
+
+random_add_noise calls SHATransform for every 64 octets of incoming noise,
+yet instead of xor'ing the hashed noise into the pool it instead only xor'ed
+20 octets of the raw noise in each iteration. This effectively reduced the
+amount of new entropy entering the pool.
+
+Origin: upstream, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=fa383072440a3ae6f6cf3ad5e024750d973ccb07
+Last-Update: 2019-03-20
+
+Patch-Name: put-hashed-noise-into-random-pool.patch
+---
+ sshrand.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sshrand.c b/sshrand.c
+index ead39a9b..0b063a04 100644
+--- a/sshrand.c
++++ b/sshrand.c
+@@ -225,7 +225,7 @@ void random_add_noise(void *noise, int length)
+ 	length -= HASHINPUT - pool.incomingpos;
+ 	SHATransform((word32 *) pool.incoming, (word32 *) pool.incomingb);
+ 	for (i = 0; i < HASHSIZE; i++) {
+-	    pool.pool[pool.poolpos++] ^= pool.incomingb[i];
++	    pool.pool[pool.poolpos++] ^= pool.incoming[i];
+ 	    if (pool.poolpos >= POOLSIZE)
+ 		pool.poolpos = 0;
+ 	}

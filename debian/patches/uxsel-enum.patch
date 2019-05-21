@@ -1,0 +1,206 @@
+From 885279d950080c9c27e64aacdbb3aa4957cf2da4 Mon Sep 17 00:00:00 2001
+From: Simon Tatham <anakin@pobox.com>
+Date: Thu, 7 Feb 2019 18:13:56 +0000
+Subject: Introduce an enum of the uxsel / select_result flags.
+
+Those magic numbers 1,2,4 were getting annoying. Time to replace them
+while I can still remember what they do.
+
+Origin: backport, https://git.tartarus.org/?p=simon/putty.git;a=commitdiff;h=47202c4e163373736a5bce01730bebc2d9e878fd
+Last-Update: 2019-03-29
+
+Patch-Name: uxsel-enum.patch
+---
+ unix/gtkwin.c   |  6 +++---
+ unix/unix.h     |  1 +
+ unix/uxagentc.c |  4 ++--
+ unix/uxnet.c    | 14 +++++++-------
+ unix/uxplink.c  |  6 +++---
+ unix/uxpty.c    | 10 +++++-----
+ unix/uxsftp.c   |  6 +++---
+ 7 files changed, 24 insertions(+), 23 deletions(-)
+
+diff --git a/unix/gtkwin.c b/unix/gtkwin.c
+index 3d3789f8..30933da7 100644
+--- a/unix/gtkwin.c
++++ b/unix/gtkwin.c
+@@ -1532,11 +1532,11 @@ void fd_input_func(gpointer data, gint sourcefd, GdkInputCondition condition)
+      * marker.
+      */
+     if (condition & GDK_INPUT_EXCEPTION)
+-        select_result(sourcefd, 4);
++        select_result(sourcefd, SELECT_X);
+     if (condition & GDK_INPUT_READ)
+-        select_result(sourcefd, 1);
++        select_result(sourcefd, SELECT_R);
+     if (condition & GDK_INPUT_WRITE)
+-        select_result(sourcefd, 2);
++        select_result(sourcefd, SELECT_W);
+ }
+ 
+ void destroy(GtkWidget *widget, gpointer data)
+diff --git a/unix/unix.h b/unix/unix.h
+index 1968a423..edc77a67 100644
+--- a/unix/unix.h
++++ b/unix/unix.h
+@@ -122,6 +122,7 @@ void uxsel_init(void);
+ typedef int (*uxsel_callback_fn)(int fd, int event);
+ void uxsel_set(int fd, int rwx, uxsel_callback_fn callback);
+ void uxsel_del(int fd);
++enum { SELECT_R = 1, SELECT_W = 2, SELECT_X = 4 };
+ int select_result(int fd, int event);
+ int first_fd(int *state, int *rwx);
+ int next_fd(int *state, int *rwx);
+diff --git a/unix/uxagentc.c b/unix/uxagentc.c
+index 5734a7b0..9d2b4cc1 100644
+--- a/unix/uxagentc.c
++++ b/unix/uxagentc.c
+@@ -58,7 +58,7 @@ static int agent_select_result(int fd, int event)
+     int ret;
+     struct agent_connection *conn;
+ 
+-    assert(event == 1);		       /* not selecting for anything but R */
++    assert(event == SELECT_R);  /* not selecting for anything but R */
+ 
+     conn = find234(agent_connections, &fd, agent_connfind);
+     if (!conn) {
+@@ -152,7 +152,7 @@ int agent_query(void *in, int inlen, void **out, int *outlen,
+     conn->callback_ctx = callback_ctx;
+     add234(agent_connections, conn);
+ 
+-    uxsel_set(sock, 1, agent_select_result);
++    uxsel_set(sock, SELECT_R, agent_select_result);
+     return 0;
+ 
+     failure:
+diff --git a/unix/uxnet.c b/unix/uxnet.c
+index e072c479..103f7635 100644
+--- a/unix/uxnet.c
++++ b/unix/uxnet.c
+@@ -1248,7 +1248,7 @@ static int net_select_result(int fd, int event)
+     noise_ultralight(event);
+ 
+     switch (event) {
+-      case 4:			       /* exceptional */
++      case SELECT_X:                   /* exceptional */
+ 	if (!s->oobinline) {
+ 	    /*
+ 	     * On a non-oobinline socket, this indicates that we
+@@ -1285,7 +1285,7 @@ static int net_select_result(int fd, int event)
+ 	 */
+ 	s->oobpending = TRUE;
+         break;
+-      case 1: 			       /* readable; also acceptance */
++      case SELECT_R:                   /* readable; also acceptance */
+ 	if (s->listener) {
+ 	    /*
+ 	     * On a listening socket, the readability event means a
+@@ -1376,7 +1376,7 @@ static int net_select_result(int fd, int event)
+ 	    return plug_receive(s->plug, atmark ? 0 : 1, buf, ret);
+ 	}
+ 	break;
+-      case 2:			       /* writable */
++      case SELECT_W:                   /* writable */
+ 	if (!s->connected) {
+ 	    /*
+ 	     * select() reports a socket as _writable_ when an
+@@ -1475,14 +1475,14 @@ static void uxsel_tell(Actual_Socket s)
+     int rwx = 0;
+     if (!s->pending_error) {
+         if (s->listener) {
+-            rwx |= 1;                  /* read == accept */
++            rwx |= SELECT_R;           /* read == accept */
+         } else {
+             if (!s->connected)
+-                rwx |= 2;              /* write == connect */
++                rwx |= SELECT_W;       /* write == connect */
+             if (s->connected && !s->frozen && !s->incomingeof)
+-                rwx |= 1 | 4;          /* read, except */
++                rwx |= SELECT_R | SELECT_X;
+             if (bufchain_size(&s->output_data))
+-                rwx |= 2;              /* write */
++                rwx |= SELECT_W;
+         }
+     }
+     uxsel_set(s->s, rwx, net_select_result);
+diff --git a/unix/uxplink.c b/unix/uxplink.c
+index 90ad8d52..e622001b 100644
+--- a/unix/uxplink.c
++++ b/unix/uxplink.c
+@@ -1099,11 +1099,11 @@ int main(int argc, char **argv)
+              * past the urgent marker.
+              */
+ 	    if (FD_ISSET(fd, &xset))
+-		select_result(fd, 4);
++		select_result(fd, SELECT_X);
+ 	    if (FD_ISSET(fd, &rset))
+-		select_result(fd, 1);
++		select_result(fd, SELECT_R);
+ 	    if (FD_ISSET(fd, &wset))
+-		select_result(fd, 2);
++		select_result(fd, SELECT_W);
+ 	}
+ 
+ 	if (FD_ISSET(signalpipe[0], &rset)) {
+diff --git a/unix/uxpty.c b/unix/uxpty.c
+index e504b705..3fa19449 100644
+--- a/unix/uxpty.c
++++ b/unix/uxpty.c
+@@ -572,7 +572,7 @@ int pty_real_select_result(Pty pty, int event, int status)
+ 	    finished = TRUE;
+ 	}
+     } else {
+-	if (event == 1) {
++	if (event == SELECT_R) {
+ 
+ 	    ret = read(pty->master_fd, buf, sizeof(buf));
+ 
+@@ -599,7 +599,7 @@ int pty_real_select_result(Pty pty, int event, int status)
+ 	    } else if (ret > 0) {
+ 		from_backend(pty->frontend, 0, buf, ret);
+ 	    }
+-	} else if (event == 2) {
++	} else if (event == SELECT_W) {
+             /*
+              * Attempt to send data down the pty.
+              */
+@@ -684,9 +684,9 @@ static void pty_uxsel_setup(Pty pty)
+ {
+     int rwx;
+ 
+-    rwx = 1;                           /* always want to read from pty */
++    rwx = SELECT_R;                    /* always want to read from pty */
+     if (bufchain_size(&pty->output_data))
+-        rwx |= 2;                      /* might also want to write to it */
++        rwx |= SELECT_W;               /* might also want to write to it */
+     uxsel_set(pty->master_fd, rwx, pty_select_result);
+ 
+     /*
+@@ -694,7 +694,7 @@ static void pty_uxsel_setup(Pty pty)
+      * backend instances, but it's simplest just to call it every
+      * time; uxsel won't mind.
+      */
+-    uxsel_set(pty_signal_pipe[0], 1, pty_select_result);
++    uxsel_set(pty_signal_pipe[0], SELECT_R, pty_select_result);
+ }
+ 
+ /*
+diff --git a/unix/uxsftp.c b/unix/uxsftp.c
+index 391da021..3db6c3d3 100644
+--- a/unix/uxsftp.c
++++ b/unix/uxsftp.c
+@@ -534,11 +534,11 @@ static int ssh_sftp_do_select(int include_stdin, int no_fds_ok)
+ 	 * past the urgent marker.
+ 	 */
+ 	if (FD_ISSET(fd, &xset))
+-	    select_result(fd, 4);
++	    select_result(fd, SELECT_X);
+ 	if (FD_ISSET(fd, &rset))
+-	    select_result(fd, 1);
++	    select_result(fd, SELECT_R);
+ 	if (FD_ISSET(fd, &wset))
+-	    select_result(fd, 2);
++	    select_result(fd, SELECT_W);
+     }
+ 
+     sfree(fdlist);
